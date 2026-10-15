@@ -439,19 +439,20 @@ def punch_out(body: PunchOutIn):
         out_dt, _ = _now_trunc()
     else:
         out_dt, _ = _ms_to_dt_trunc(body.punched_at)
-    # If there is an open record, check that first; otherwise most recent record with punch_in <= out_dt
-    open_rec = db.attendance_logs.find_one(
-        {"emp_code": body.emp_code, "punch_in": {"$ne": None}, "punch_out": None}
-    )
-    if open_rec is not None:
-        rec = open_rec
-    else:
-        cand = list(db.attendance_logs.find(
-            {"emp_code": body.emp_code, "punch_in": {"$ne": None, "$lte": out_dt}}
-        ).sort("punch_in", DESCENDING).limit(1))
-        if not cand:
+    # Most recent record whose punch_in is at or before punched_at (works across midnight)
+    cand = list(db.attendance_logs.find(
+        {"emp_code": body.emp_code, "punch_in": {"$ne": None, "$lte": out_dt}}
+    ).sort("punch_in", DESCENDING).limit(1))
+    if not cand:
+        # No record at or before punched_at: 404 if employee has never punched in,
+        # else 422 since punched_at is before the earliest punch_in.
+        any_pin = db.attendance_logs.find_one(
+            {"emp_code": body.emp_code, "punch_in": {"$ne": None}}
+        )
+        if any_pin is None:
             raise HTTPException(404, "no punch-in found")
-        rec = cand[0]
+        raise HTTPException(422, "punched_at must be after punch_in")
+    rec = cand[0]
     pin = rec.get("punch_in")
     if pin is not None and pin.tzinfo is None:
         pin = pin.replace(tzinfo=timezone.utc)
